@@ -1,0 +1,827 @@
+//Commons
+integer CHANNEL;
+integer giveDebug=FALSE;
+integer giveFeedback=TRUE;
+integer listenHandle;
+list IDs;
+key owner;
+
+list whiteIDList;
+//========== Notecard
+string NOTECARD="settings";
+key kQuery;
+integer current_notecard;
+integer iLine;
+//===========================================================================================================================
+integer currentExpression=-1;
+list expressions; //[name, min_time, max_time, animation, [parts_to_show]]
+
+integer blinkSpeed=3;
+list blinkSpeeds=[ 
+    "off", 9999999.0, 9999999.0,
+    "slow", 5.0, 10.0,
+    "medium", 2.0, 7.0,
+    "fast", 0.04, 5.0
+];
+    
+
+integer blinkOnState=TRUE;
+integer squintOnState=TRUE;
+integer squinting=FALSE;
+
+list primAnimations; //[name, frame_time, type, pause, frame_count, [frames]]
+integer ANIM_TYPE_LOOP     =0;
+integer ANIM_TYPE_PINGPONG =1;
+integer ANIM_TYPE_PINGPONG2=2;
+
+
+list primAnimationScheduler;//[animation_name; min_time; max_time; repeat]
+list primAnimationFrameScheduler;//[time, animation_name, frame_num, prev_frame_num, frame_count] 
+//===========================================================================================================================
+list animationList;//[name, current, animstop, [animations]]
+
+//===========================================================================================================================
+list events;//[name, enabled, active, prim_animation, animation, sound]
+integer animPerm=FALSE;
+
+integer animLock=FALSE;
+//===========================================================================================================================
+//===========================================================================================================================
+showFreeMemory(){
+    integer freemem = llGetFreeMemory();
+    if(llToLower( "Ü" ) == "Ü"){
+        integer memory = (integer)((float)freemem * 100.0 / 16384.0);
+        feedback(llGetScriptName()+" "+(string)memory + "% memory free ("+(string)freemem+" Byte). LSO" );
+    }else{
+        integer memory = (integer)((float)freemem * 100.0 / 65536.0);
+        feedback(llGetScriptName()+" "+(string)memory + "% memory free ("+(string)freemem+" Byte). Mono" );
+    }
+}
+
+debug(string s){
+    if(giveDebug) llOwnerSay(s);
+}
+
+feedback(string s){
+    if(giveFeedback!=0) llOwnerSay(s);
+}
+
+ 
+processCommand(string cmd, string param){
+    list cmds=llParseStringKeepNulls(llToLower(cmd), [";"], []);
+    list params=llParseStringKeepNulls(param, [";"], []);
+    cmd=llList2String(cmds, 0);
+    param=llList2String(params, 0);
+    if(cmd=="channel"){
+        CHANNEL=(integer)param;
+        if(listenHandle!=-1) llListenRemove(listenHandle);
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, ""); 
+        
+    }else if(cmd=="reset"){
+        llResetScript();
+        
+    }else if(cmd=="id"){
+        IDs=llParseString2List(param, [","], []);
+        
+    }else if(cmd=="memory"){
+        showFreeMemory();
+    }else if(cmd=="feedback"){
+        if(param=="on") giveFeedback++; else giveFeedback--;
+        
+    }else if(cmd=="dump"){
+        llSay(CHANNEL, "hud:load:"+dumpSettings());
+        
+    }else if(cmd=="debug"){
+        giveDebug=(param=="on");
+         
+    }else if(cmd=="primanimation"){
+        primAnimationCtl(llList2String(cmds, 1), params);
+        
+    }else if(cmd=="expression"){
+        expressionCtl(llList2String(cmds, 1), params);
+    
+    }else if(cmd=="state"){
+        stateCtl(llList2String(cmds, 1), params);
+        
+        
+    }else if(cmd=="animationlist"){
+        animationListCtl(llList2String(cmds, 1), params);
+        
+    }else if(cmd=="sleep"){
+        llSleep((float)param);
+    
+    }else if(cmd=="jawlock"){
+        llStartAnimation("silence");
+        animLock=TRUE;
+        
+    }else if(cmd=="jawunlock"){
+        llStopAnimation("silence");
+        animLock=FALSE;
+    }
+}
+
+//===========================================================================================================================
+    
+StartAnimation(string animation){
+    llStartAnimation(animation);
+}
+
+StopAnimation(string animation){
+    llStopAnimation(animation);
+}
+
+animationListCtl(string cmd, list params){
+    //list animationList;//[name, current, animstop, [animations]]
+
+    string name=llList2String(params, 0);
+    integer index=llListFindList(animationList, [name]);
+    
+    if(cmd=="add"){
+        if(index==-1){
+            index=llGetListLength(animationList);
+        }
+        animationList=llListReplaceList(animationList, [name, "", llList2String(params,1), llList2String(params,2)], index, index+3);
+        
+    }else if(cmd=="set"){
+        if(index!=-1){
+            cmd=llList2String(params, 1);
+            
+            list currentAnimList=llParseString2List(llList2String(animationList, index+3), [","], []);
+            integer currentAnimIndex=-1;
+            
+            string tempAnim=llList2String(animationList, index+1); //Stop old running
+            if(tempAnim!=""){ 
+                currentAnimIndex=llListFindList(currentAnimList, [tempAnim]);
+                StopAnimation(tempAnim);
+            }
+            
+            tempAnim=llList2String(animationList, index+2); //Using specific "stop" anim
+            if(tempAnim!=""){ 
+                //StartAnimation(tempAnim);
+            }
+            
+            if(cmd=="prev"){
+                --currentAnimIndex;
+                if(currentAnimIndex<0) currentAnimIndex=llGetListLength(currentAnimList)-1;
+            }else if(cmd=="next"){
+                ++currentAnimIndex;
+                if(currentAnimIndex>=llGetListLength(currentAnimList)) currentAnimIndex=0;                
+            }else{
+                currentAnimIndex=llListFindList(currentAnimList, [cmd]);
+            }
+            
+            if(currentAnimIndex!=-1){                
+                animationList=llListReplaceList(animationList, [llList2String(currentAnimList, currentAnimIndex)], index+1, index+1);
+            }
+            
+            animationListCtl("start_all", []);
+                                                                                                                                              
+        }    
+    }else if(cmd=="stop"){
+        if(index!=-1){
+            string tempAnim=llList2String(animationList, index+1); //Stop old running
+            if(tempAnim!=""){ 
+                StopAnimation(tempAnim);
+            }
+            
+            tempAnim=llList2String(animationList, index+2); //Using specific "stop" anim
+            if(tempAnim!=""){ 
+                StartAnimation(tempAnim);
+            }
+            
+            animationList=llListReplaceList(animationList, [""], index+1, index+1);
+            
+            animationListCtl("start_all", []);
+        }    
+    
+    }else if(cmd=="start_all"){
+        if(!animLock){
+            index=0;
+            while(index<llGetListLength(animationList)){
+                string tempAnim=llList2String(animationList, index+1);
+                if(tempAnim!=""){
+                    StartAnimation(tempAnim);
+                }
+                
+                index+=4;
+            }        
+        }        
+    }else if(cmd=="stop_all"){
+        if(!animLock){
+            index=0;
+            while(index<llGetListLength(animationList)){
+                string tempAnim=llList2String(animationList, index+1);
+                if(tempAnim!=""){
+                    StopAnimation(tempAnim);
+                }
+                
+                index+=4;
+            }        
+        }        
+    }
+}
+
+stateCtl(string cmd, list params){
+    //events;[name, enabled, active, prim_animation, animation_list, current_animation, animation_stop, sound]
+    
+    string name=llList2String(params, 0);
+    integer index=llListFindList(events, [name]);
+    
+    if(cmd=="add"){
+        if(index==-1){
+            index=llGetListLength(events);
+        }
+        events=llListReplaceList(events, [name, TRUE, FALSE, llList2String(params,1), llList2String(params,2), "", llList2String(params,3), llList2String(params,4)], index, index+7);
+        
+    }else if(cmd=="switch"){
+        cmd=llList2String(params, 1);
+        if(cmd=="on"){
+            if(index!=-1){ 
+                if(llList2Integer(events, index+1) && !llList2Integer(events, index+2)){//If enabled and not already active
+                    events=llListReplaceList(events, [TRUE], index+2, index+2);
+                    
+                    string primAnimation=llList2String(events, index+3);
+                    if(primAnimation!="") primAnimationCtl("start", [primAnimation, 0.00, 0.00, -1]);
+                    
+                    if(!animLock){
+                        animationListCtl("stop_all", []);
+                        string slAnimation=llList2String(events, index+4);
+                        if(animPerm && (slAnimation!="")){ 
+                            list temp=llParseString2List(slAnimation, [","], []);
+                            slAnimation=llList2String(temp, (integer)llFrand(llGetListLength(temp)));
+                            StartAnimation(slAnimation);
+                        }
+                    
+                        events=llListReplaceList(events, [slAnimation], index+5, index+5);
+                    }
+                    
+                    
+                    string sound=llList2String(events, index+7);
+                    if(sound!="") llLoopSound(sound, 10.0);
+                    if(squintOnState) expressionCtl("squint", [TRUE]);
+                    if(blinkOnState) expressionCtl("blink", []);
+                }
+            }
+        }else if(cmd=="off"){
+            if(index!=-1){
+                if(llList2Integer(events, index+2)){//If active 
+                    events=llListReplaceList(events, [FALSE], index+2, index+2); //Set Inactive
+                    string primAnimation=llList2String(events, index+3);
+                    primAnimationCtl("stop", [primAnimation]);
+                    
+                    string slAnimation=llList2String(events, index+5); //stop current animation
+                    if(animPerm && (slAnimation!="")){ 
+                        StopAnimation(slAnimation);
+                    }
+                    
+                    //Anim stop
+                    slAnimation=llList2String(events, index+6);
+                    if(animPerm && (slAnimation!="")){
+                        StartAnimation(slAnimation);
+                    }
+                    
+                    string sound=llList2String(events, index+7);
+                    if(sound!="") llStopSound();
+                    if(blinkOnState) expressionCtl("blink", []);
+                    if(squintOnState) expressionCtl("squint", [FALSE]);
+                    animationListCtl("start_all", []);
+                }
+            }
+        }
+    }else if(cmd=="enable"){
+        if(index!=-1){
+            events=llListReplaceList(events, [TRUE], index+1, index+1);
+        }    
+    }else if(cmd=="disable"){
+        if(index!=-1){
+            events=llListReplaceList(events, [FALSE], index+1, index+1);
+            stateCtl("switch", [name, "stop"]);
+        }    
+    }
+}
+
+//===========================================================================================================================
+//Dump
+string dumpSettings(){    
+    return "";
+}
+
+//===========================================================================================================================
+string IDlist2IntegerList(string sIDs){
+    list _IDs=llParseString2List(sIDs, [","], []);
+    //Face is stored in the 16 high bits, the prim/link number stored in the 16 low 
+    list result;
+    
+    integer i=0;
+    string oldName;
+    integer oldNum;
+    
+    
+    while(i<llGetListLength(_IDs)){
+        list l=llParseString2List(llList2String(_IDs, i), ["."], []);
+        string currentName=llToLower(llList2String(l, 0));
+        integer currentNum;
+        if(currentName!=oldName){ //search prim
+            integer j=llGetNumberOfPrims();
+            currentNum=-1;
+            while(j>0){
+                if(llToLower(llGetLinkName(j))==currentName){
+                    currentNum=j;
+                    j=0; //out of the loop
+                }
+                
+                --j;
+            }
+            
+        }else{
+            currentNum=oldNum;
+        }
+        oldName=currentName;
+        oldNum=currentNum;
+        if(currentNum!=-1){
+            integer iFace;
+            if(llList2String(l, 1)=="") iFace=-1; //No face explicitely defined
+                else iFace=llList2Integer(l, 1);
+                
+            if(iFace==-1){
+                //We add each face separately to workaround the face that we cannot set the alpha without the color ( so we'll need to get each face's color later... )
+                integer j=llGetLinkNumberOfSides(currentNum);
+                while(--j>=0){
+                    result+=[( currentNum | (j<<16) )];
+                }
+                
+            }else{
+                if(iFace<llGetLinkNumberOfSides(currentNum)){
+                    result+=[( currentNum | (iFace<<16) )];
+                }
+            }     
+        
+        }
+        
+
+            
+        ++i; 
+    }
+    
+    return llDumpList2String(result, ",");
+}
+
+switchIntegerListAlpha(list listOff, list listOn){    
+    //First we get each color
+    list tempAlphas;
+    list tempColorsOff;
+    list tempColorsOn;
+    integer i=llGetListLength(listOff);
+    while(--i>=0){
+        integer face=llList2Integer(listOff, i);
+        integer prim=(face&0xFFFF);
+        face=face>>16;
+        
+        tempColorsOff+=[PRIM_LINK_TARGET, prim, PRIM_COLOR, face];
+    }
+    tempColorsOff=llGetLinkPrimitiveParams(1, [PRIM_COLOR, 0]+tempColorsOff);// Add to include a dummy request cause sl doesn't like having a PRIM_LINK_TARGET in first position
+    tempColorsOff=llDeleteSubList(tempColorsOff, 0, 1); // and we remove the dummy
+    
+    i=llGetListLength(listOn);
+    while(--i>=0){
+        integer face=llList2Integer(listOn, i);
+        integer prim=(face&0xFFFF);
+        face=face>>16;
+                
+        tempColorsOn+=[PRIM_LINK_TARGET, prim, PRIM_COLOR, face, PRIM_DESC];
+    }
+    
+    tempColorsOn=llGetLinkPrimitiveParams(1, [PRIM_COLOR, 0]+tempColorsOn);// Add to include a dummy request cause sl doesn't like having a PRIM_LINK_TARGET in first position
+    
+    
+    tempColorsOn=llDeleteSubList(tempColorsOn, 0, 1); // and we remove the dummy
+    
+    
+    //Then We set the Alpha
+    list tempAlpha;
+    integer j=0;
+    
+    i=llGetListLength(listOff);
+    while(--i>=0){
+        integer face=llList2Integer(listOff, i);
+        integer prim=(face&0xFFFF);
+        face=face>>16;
+        
+        tempAlpha+=[PRIM_LINK_TARGET, prim, PRIM_COLOR, face, llList2Vector(tempColorsOff, j*2), 0.0]; //Hide faces
+        ++j;
+    }
+     
+    j=0;
+    i=llGetListLength(listOn);
+    while(--i>=0){
+        integer face=llList2Integer(listOn, i);
+        integer prim=(face&0xFFFF);
+        face=face>>16;
+        
+        list x=llParseString2List(llList2String(tempColorsOn, (j*3)+2), [";"], []);
+        float alpha=llList2Float(x, (face*5)+3)/100.0;
+        tempAlpha+=[PRIM_LINK_TARGET, prim, PRIM_COLOR, face, llList2Vector(tempColorsOn, j*3), alpha];//Show faces
+        ++j;
+    }
+    
+    llSetLinkPrimitiveParamsFast(1, tempAlpha);
+}
+
+mergePrimAnimation(integer animIndex, float timeOffset){
+    //list primAnimations; //[name, frame_time, type, pause, frame_count, [frames]]
+
+    float frameTime=llList2Float(primAnimations, animIndex+1);
+    integer animType=llList2Integer(primAnimations, animIndex+2);
+    integer animPause=llList2Integer(primAnimations, animIndex+3);
+    integer frameCount=llList2Integer(primAnimations, animIndex+4);
+    integer frameNum=0;
+
+
+    list frames;
+
+    if(animType==ANIM_TYPE_LOOP){
+        if(animPause<0) animPause=0;
+        if(animPause>(frameCount/2)) animPause=frameCount/2;
+        if(squinting) animPause=2;
+
+        frameNum=animPause;
+        while(frameNum<(frameCount-animPause)){
+            frames+=frameNum;
+            ++frameNum;
+        }
+        
+    }else if(animType==ANIM_TYPE_PINGPONG){
+        while(frameNum<(frameCount-1)){
+            frames+=frameNum;
+            ++frameNum;
+        }
+
+        while((frameNum)>=0){
+            frames+=frameNum;
+            --frameNum;
+        } 
+
+    }else if(animType==ANIM_TYPE_PINGPONG2){
+        
+        frameCount=(integer)((frameCount/2.0)+llFrand(frameCount/2.0));
+
+        while(frameNum<(frameCount-1)){
+            frames+=frameNum;
+            ++frameNum;
+        }
+
+        while((frameNum)>=0){
+            frames+=frameNum;
+            --frameNum;
+        }    
+    }
+
+    frameCount=llGetListLength(frames); 
+    integer prevFrameNum=llList2Integer(frames, frameCount-1);
+    frameNum=0;
+
+    integer offset=0;
+    while(frameNum<frameCount){
+        while((offset*6<llGetListLength(primAnimationFrameScheduler)) && (llList2Float(primAnimationFrameScheduler, offset*6)<timeOffset)){ 
+            ++offset;
+        }
+
+        //[time, animation_name, frame_index, frame_num, prev_frame_num, frame_count]
+        primAnimationFrameScheduler=llListInsertList(primAnimationFrameScheduler, [timeOffset, llList2String(primAnimations, animIndex), (frameCount-frameNum)-1, llList2Integer(frames, frameNum), llList2Integer(frames, prevFrameNum), frameCount], offset*6); 
+
+        timeOffset+=frameTime;
+        prevFrameNum=frameNum;
+
+        ++frameNum;
+    }
+}
+
+resetPrimAnimation(string animName, integer frame){
+    //list primAnimations; //[name, frame_time, type, pause, frame_count, [frames]]
+    integer index=llListFindList(primAnimations, [animName]);
+    if(index!=-1){
+        list framesHide;
+        list framesShow;
+        
+        if(frame==-1){
+            integer frameCount=llList2Integer(primAnimations, index+4);
+            frame=llList2Integer(primAnimations, index+3);
+            if(frame<0) frame=0;
+            if(frame>(frameCount/2)) frame=frameCount/2;
+            if(squinting) frame=2;
+        }
+        
+    
+        integer i=llList2Integer(primAnimations, index+4);
+        while(--i>=0){
+            if(i!=frame) framesHide+=llParseString2List(llList2String(primAnimations, index+5+i), [","], []);
+            else framesShow=llParseString2List(llList2String(primAnimations, index+5+i), [","], []);
+        }
+        
+        switchIntegerListAlpha(framesHide, framesShow);
+        
+    }
+}
+
+primAnimationCtl(string cmd, list params){
+    string name=llList2String(params, 0); 
+    integer index=llListFindList(primAnimations, [name]);
+    if(cmd=="add"){
+        integer frame_count;
+
+        if(index==-1){
+            index=llGetListLength(primAnimations);
+            frame_count=0;
+        }else{
+            frame_count=llList2Integer(primAnimations, index+4);
+        }
+
+        float frame_time=llList2Float(params, 1);
+        string sType=llList2String(params, 2);
+        integer iType=ANIM_TYPE_LOOP;
+        if(sType=="pingpong") iType=ANIM_TYPE_PINGPONG;
+        else if(sType=="pingpong2") iType=ANIM_TYPE_PINGPONG2;
+
+        //list primAnimations; //[name, frame_time, type, pause, frame_count, [frames]]
+        primAnimations=llListReplaceList(primAnimations, [name, frame_time, iType, 0, frame_count], index, index+4);
+
+    }else if(cmd=="addframe"){
+        if(index!=-1){
+            integer frame_count=llList2Integer(primAnimations, index+4);
+            primAnimations=llListReplaceList(primAnimations, [frame_count+1], index+4, index+4);
+            primAnimations=llListInsertList(primAnimations, [IDlist2IntegerList(llList2String(params, 1))], index+6+frame_count);
+        }else{
+            debug("animations name unknown, cannot add frame: "+name);
+        }
+    
+    }else if(cmd=="restart"){
+        if(index!=-1){
+            index=llListFindList(primAnimationScheduler, [name]);
+            if(index!=-1){
+                list temp=llList2List(primAnimationScheduler, index, index+3);    
+                primAnimationCtl("stop", [name]);
+                primAnimationCtl("start", temp);
+            }
+        }
+            
+    }else if(cmd=="start"){
+        if(index!=-1){
+            if(llListFindList(primAnimationScheduler, [name])==-1){ //Prevents to starts more than one time the same animations
+                //list primAnimationScheduler;//[animation_name; min_time; max_time; repeat]
+                primAnimationScheduler+=[name, llList2Float(params, 1), llList2Float(params, 2), llList2Integer(params, 3)];
+                resetPrimAnimation(name, -1);
+                mergePrimAnimation(index, llGetTime());
+    
+                llSetTimerEvent(0.001);
+            }
+        }
+
+    }else if(cmd=="stop"){
+        //list primAnimationScheduler;//[animation_name; min_time; max_time; repeat]
+        //list primAnimationFrameScheduler;//[time, animation_name, frame_id, frame_num, prev_frame_num, frame_count]
+        if(index!=-1){
+            integer i=llGetListLength(primAnimationScheduler)-4;
+            while(i>=0){
+                if(llList2String(primAnimationScheduler, i)==name){
+                    primAnimationScheduler=llDeleteSubList(primAnimationScheduler, i, i+3);
+                } 
+                i-=4;
+            }
+            i=llGetListLength(primAnimationFrameScheduler)-6;
+            while(i>=0){
+                if(llList2String(primAnimationFrameScheduler, i+1)==name){
+                    primAnimationFrameScheduler=llDeleteSubList(primAnimationFrameScheduler, i, i+5);
+                } 
+                i-=6;
+            }
+            
+            resetPrimAnimation(name, -1);            
+        }
+
+        if(primAnimationScheduler==[]){ 
+            llSetTimerEvent(0.0);
+        }
+            
+    }else if(cmd=="pause"){
+        if(index!=-1){
+            
+            cmd=llList2String(params, 1);
+            integer pauseFrame;
+            integer max=llList2Integer(primAnimations, index+4)-1;
+            
+            if(cmd=="prev"){
+                pauseFrame=llList2Integer(primAnimations, index+3)-1;
+                if(pauseFrame<0) pauseFrame=0;
+            }else if(cmd=="next"){
+                pauseFrame=llList2Integer(primAnimations, index+3)+1;
+                if(pauseFrame>(max/2)) pauseFrame=(max/2);
+            }else{
+                pauseFrame=(integer)cmd;
+            }
+            if(pauseFrame>max) pauseFrame=0;
+            if(pauseFrame<-1) pauseFrame=-1;
+            primAnimations=llListReplaceList(primAnimations, [pauseFrame], index+3, index+3);
+            
+            
+            resetPrimAnimation(name, -1);
+            primAnimationCtl("restart", [name]);
+        }
+    }
+}
+//===========================================================================================================================
+expressionCtl(string cmd, list params){
+    string name=llList2String(params, 0);
+    if(cmd=="add"){
+        integer index=llListFindList(expressions, [name]);
+        if(index==-1){
+            index=llGetListLength(expressions);
+        }
+
+        //list expressions; //[name, animation, [parts_to_show]]
+        expressions=llListReplaceList(expressions, [name, llList2String(params, 1), IDlist2IntegerList(llList2String(params, 2))], index, index+2);
+
+
+
+    }else if(cmd=="set"){
+        integer index=llListFindList(expressions, [name]);
+        if(index!=-1){
+            if(index!=currentExpression){
+                list old;
+                if(currentExpression!=-1){
+                    old=llParseString2List(llList2String(expressions, currentExpression+2), [","], []);
+                    primAnimationCtl("stop", [llList2String(expressions, currentExpression+1)]);
+                }
+
+                currentExpression=index;
+                switchIntegerListAlpha(old, llParseString2List(llList2String(expressions, currentExpression+2), [","], [])); //Show new ones
+
+                if(blinkSpeed!=0){
+                    //start, anim_name, min_time, max_time, repeat 
+                    primAnimationCtl("start", [llList2String(expressions, currentExpression+1), llList2Float(blinkSpeeds, blinkSpeed+1), llList2Float(blinkSpeeds, blinkSpeed+2), -1]);
+                }
+
+            }
+        }else debug("can't set expression, unknown:"+name);
+
+    }else if(cmd=="blink"){
+        primAnimationCtl("restart", [llList2String(expressions, currentExpression+1)]);    
+    
+    }else if(cmd=="blinkspeed"){
+        blinkSpeed=llListFindList(blinkSpeeds, [llList2String(params, 0)]);
+
+        primAnimationCtl("stop", [llList2String(expressions, currentExpression+1)]);
+        
+        primAnimationCtl("start", [llList2String(expressions, currentExpression+1), llList2Float(blinkSpeeds, blinkSpeed+1), llList2Float(blinkSpeeds, blinkSpeed+2), -1]);     
+         
+    }else if(cmd=="squintonstate"){
+        squintOnState=(llList2String(params, 0)=="on");
+    
+    }else if(cmd=="blinkonstate"){
+        blinkOnState=(llList2String(params, 0)=="on");
+    
+    }else if(cmd=="squint"){
+        squinting=llList2Integer(params, 0);
+        resetPrimAnimation(llList2String(expressions, currentExpression+1), -1);        
+         
+    }else if(cmd=="pause"){
+        primAnimationCtl("pause", [llList2String(expressions, currentExpression+1)]+params);
+    }
+}
+//===========================================================================================================================
+//===========================================================================================================================
+
+default
+{
+    state_entry(){
+        owner=llGetOwner();
+        kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+    }
+
+    changed(integer change){   
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_INVENTORY) llResetScript();    
+        if(change & CHANGED_LINK)llResetScript(); 
+    }
+    dataserver(key query_id, string data){
+        if(query_id == kQuery){
+            if(data == EOF){
+                ++current_notecard;
+                string note=llGetScriptName()+"_"+NOTECARD+" "+(string)current_notecard;
+                if(llGetInventoryType(note)!=INVENTORY_NONE){
+                    kQuery = llGetNotecardLine(note, iLine=0);
+                }else{
+                    state run;
+                }
+            }else{
+                ++iLine;
+                if(current_notecard!=0){
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD+" "+(string)current_notecard, iLine);
+                }else{
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+                }
+
+                data=llStringTrim(data, STRING_TRIM);
+                if(llGetSubString(data, 0,0)!="#"){
+                    list l=llParseString2List(data, [":"], []);
+                    processCommand(llList2String(l, 0), llList2String(l, 1));
+                }
+            }
+        }
+    }
+}
+//===========================================================================================================================
+state run
+{
+    state_entry(){  
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, ""); 
+        if(primAnimationFrameScheduler!=[])  llSetTimerEvent(0.01);
+        showFreeMemory();
+        llRequestPermissions(owner, PERMISSION_TRIGGER_ANIMATION);
+    }
+
+    run_time_permissions(integer perm){
+        animPerm=((perm&PERMISSION_TRIGGER_ANIMATION)!=0);
+        if(!animPerm){
+            llRequestPermissions(owner, PERMISSION_TRIGGER_ANIMATION);   
+        }
+    }
+    
+    changed(integer change){   
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_LINK)llResetScript(); 
+    }
+
+    timer(){
+        @loop;
+        //list primAnimations; //[name, frame_time, type, pause, frame_count, [frames]]
+        //list primAnimationScheduler;//[animation_name; min_time; max_time; repeat]
+        //list primAnimationFrameScheduler;//[time, animation_name, frame_id, frame_num, prev_frame_num, frame_count]
+
+        float currentTime=llGetTime();
+        /*if(currentTime>86400.0){ // Need to reset the time to keep accuracy and avoid bugs *sighs*
+            integer index=0;
+            while(llGetListLength(primAnimationFrameScheduler)>index){
+                primAnimationFrameScheduler=llListReplaceList(primAnimationFrameScheduler, [currentTime-llList2Float(primAnimationFrameScheduler, index)], index, index);
+                index+=4;
+            }
+            llResetTime();
+            currentTime=0;
+        }*/
+
+        integer animationIndex=llListFindList(primAnimations, [llList2String(primAnimationFrameScheduler, 1)]);
+            
+        string serializedFrame=llList2String(primAnimations, animationIndex+5+llList2Integer(primAnimationFrameScheduler, 3));
+        list frames=llParseString2List(serializedFrame, [","], []);
+
+        list oldFrames;
+        integer oldFrameIndex=llList2Integer(primAnimationFrameScheduler, 4);
+        if(oldFrameIndex!=-1){
+            string serializedOldFrame=llList2String(primAnimations, animationIndex+5+llList2Integer(primAnimationFrameScheduler, 4));
+            oldFrames=llParseString2List(serializedOldFrame, [","], []);
+        }
+
+        switchIntegerListAlpha(oldFrames, frames);
+            
+        integer frameID=llList2Integer(primAnimationFrameScheduler, 2);
+        if(frameID==0){
+            integer indexScheduler=llListFindList(primAnimationScheduler, [llList2String(primAnimationFrameScheduler, 1)]);
+
+            float minTime=llList2Float(primAnimationScheduler, indexScheduler+1);
+            float maxTime=llList2Float(primAnimationScheduler, indexScheduler+2);
+
+            minTime=minTime+llFrand(maxTime-minTime);
+            
+            mergePrimAnimation(llListFindList(primAnimations, [llList2String(primAnimationFrameScheduler, 1)]), minTime+currentTime);
+        }
+
+        primAnimationFrameScheduler=llDeleteSubList(primAnimationFrameScheduler, 0, 5);
+
+        if(primAnimationFrameScheduler!=[]){ //launch next frame
+            float time = (llList2Float(primAnimationFrameScheduler, 0)-currentTime);
+            if(time<=0.001){ 
+                jump loop; //ugly hack to try to gain some time
+                time=0.001;
+            } 
+            llSetTimerEvent(time);
+
+        }else{
+            llSetTimerEvent(0.0); 
+        } 
+    }
+
+    listen(integer channel, string name, key _id, string message){
+        integer whiteListIndex=llListFindList(whiteIDList, [_id]);
+        if((whiteListIndex!=-1) || (llGetOwnerKey(_id)==owner)){ //Kinda workaround for objects that send a commands right on their destruction
+            if(whiteListIndex!=-1){ 
+                whiteIDList=llDeleteSubList(whiteIDList, whiteListIndex, whiteListIndex); 
+            }
+            if(llGetListLength(whiteIDList)>40) whiteIDList=llDeleteSubList(whiteIDList, 0, 0);
+            whiteIDList+=_id;
+            
+            list temp=llParseString2List(llStringTrim(message, STRING_TRIM), [":"], []);
+            if(llListFindList(IDs, [llList2String(temp, 0)])!=-1){
+                processCommand(llList2String(temp, 1), llList2String(temp, 2));
+            }
+        }
+    }
+}
