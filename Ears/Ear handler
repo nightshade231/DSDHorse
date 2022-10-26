@@ -1,0 +1,547 @@
+//========== Commons
+integer CHANNEL;
+integer giveDebug;
+integer giveFeedback;
+integer listenHandle;
+list IDs;
+key owner;
+
+//========== Notecard
+string NOTECARD="settings";
+key kQuery;
+integer current_notecard;
+integer iLine;
+
+//======================================================
+//Rotations
+list expressions; //[exp_Name, vector]
+integer rotInverted;
+vector currentRotation;
+//======================================================
+list textures;
+//======================================================
+//States
+integer state_enabled; //bit_list
+integer state_on; //bit_list
+
+list state_settings;//[state_name, exp_name]
+integer state_current;
+integer isClicked;
+//======================================================
+//Twitch
+float twitchOmega;
+list twitchFrequencies;//[name, freq]
+integer currentTwitchFrequency;
+float currentTwitch; 
+//======================================================
+float clickTime;
+integer CHANNEL_DIALOGS; //randomized
+integer channelDialogsHandler=-1;
+integer activeListeners;
+integer lastActiveTime;
+
+integer emoteAccess;
+    integer ACCESS_OWNER=1;
+    integer ACCESS_OTHERS=2;
+integer emoteEnabled;
+list emotes;
+string emoteObjectName;
+//===========================================================================================================================
+//===========================================================================================================================
+
+showFreeMemory(){
+    integer freemem = llGetFreeMemory();
+    if(llToLower( "Ü" ) == "Ü"){
+        integer memory = (integer)((float)freemem * 100.0 / 16384.0);
+        debug( (string)memory + "% memory free ("+(string)freemem+" Byte). LSO" );
+    }else{
+        integer memory = (integer)((float)freemem * 100.0 / 65536.0);
+        debug( (string)memory + "% memory free ("+(string)freemem+" Byte). Mono" );
+    }
+}
+
+debug(string s){
+    if(giveDebug) llOwnerSay(s);
+}
+feedback(string s){
+    if(giveFeedback!=0) llOwnerSay(s);
+}
+
+
+processCommand(string cmd, string param){ 
+    list cmds=llParseString2List(llToLower(cmd), [";"], []);
+    list params=llParseString2List(param, [";"], []);
+    cmd=llList2String(cmds, 0);
+    param=llList2String(params, 0);
+    if(cmd=="channel"){
+        CHANNEL=(integer)param;
+        if(listenHandle!=-1) llListenRemove(listenHandle);
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, "");
+    }else if(cmd=="reset"){
+        llResetScript();
+    }else if(cmd=="dump"){
+        llSay(CHANNEL+1, "hud:load:"+dumpSettings());
+    }else if(cmd=="id"){
+        IDs=llParseString2List(param, [","], []);
+    }else if(cmd=="feedback"){
+        if(param=="on") giveFeedback++; else giveFeedback--;
+    }else if(cmd=="debug"){
+        giveDebug=(param=="on");
+    }else if(cmd=="prim"){
+        primCtl(llList2String(cmds, 1), params);        
+    }else if(cmd=="twitch"){
+        twitchCtl(llList2String(cmds, 1), params);
+    }else if(cmd=="expression"){
+        expressionCtl(llList2String(cmds, 1), params);
+    }else if(cmd=="emote"){
+        emoteCtl(llList2String(cmds, 1), params);  
+    }else if(cmd=="state"){
+        stateCtl(llList2String(cmds, 1), params);
+    }
+}
+//===========================================================================================================================
+primCtl(string cmd, list params){
+    string name=llList2String(params, 0);
+    integer face=-1;
+    list tmp=llParseString2List(name, ["."], []);
+    if(llGetListLength(tmp)>1){
+        name=llList2String(tmp, 0);
+        face=llList2Integer(tmp, 1);
+    }
+
+    integer i=llGetNumberOfPrims();
+    integer len=llStringLength(name);
+
+    if(cmd=="alpha"){
+        float alpha=llList2Float(params, 1);
+        while(--i>=0){
+            if(llGetSubString(llGetLinkName(i), 0, len-1)==name){
+                llSetLinkAlpha(i, alpha, face);
+            }
+        }
+    }else if(cmd=="color"){
+        vector color=llList2Vector(params, 1);
+        while(--i>=0){
+            if(llGetSubString(llGetLinkName(i), 0, len-1)==name){
+                llSetLinkColor(i, color, face);
+            }
+        }
+    }else if(cmd=="texture"){
+        integer index=llListFindList(textures, [llList2String(params, 1)]);
+        list tmp;
+        if(index!=-1){
+            tmp=[(key)llList2String(textures, index+1), //texture
+                 (vector)llList2String(textures, index+2),//repeat
+                 (vector)llList2String(textures, index+3),//offset
+                 llList2Float(textures, index+4)]; //rot
+            while(i>=0){
+                if(llGetSubString(llGetLinkName(i), 0, len-1)==name){
+                    llSetLinkPrimitiveParamsFast(i, [PRIM_TEXTURE, face]+tmp);
+                }
+                --i;
+            }
+        }else{        
+            key uuid=llList2String(params, 1);
+            while(i>=0){
+                if(llGetSubString(llGetLinkName(i), 0, len-1)==name){
+                    llSetLinkTexture(i, uuid, face);
+                }
+                --i;
+            }
+        }
+    }else if(cmd=="raw"){
+        while(i>=0){
+            if(llGetSubString(llGetLinkName(i), 0, len-1)==name){
+                llSetLinkPrimitiveParamsFast(i, llList2List(params, 1, -1));
+            }
+            --i;
+        }        
+    }
+}
+//===========================================================================================================================
+textureCtl(string cmd, list params){
+    string name=llList2String(params, 0);
+    integer index=llListFindList(textures, [name]);
+    if(cmd=="add"){
+        if(index==-1){
+            index=llGetListLength(textures);
+        }
+        textures=llListReplaceList(textures, [name]+llList2List(params, 1, 4), index, index+4); 
+    }
+}
+//===========================================================================================================================
+//Twitch
+twitchCtl(string cmd, list params){
+    string name=llList2String(params, 0);
+    integer index=llListFindList(twitchFrequencies, [name]);
+    if(cmd=="add"){
+        if(index==-1){
+            index=llGetListLength(twitchFrequencies);
+        }
+        twitchFrequencies=llListReplaceList(twitchFrequencies, [name, llList2Float(params, 1)], index, index+1);
+    }else if(cmd=="constraint"){
+        twitchOmega=llList2Float(params, 0);
+    }else if(cmd=="set"){
+        cmd=llList2String(params, 0);        
+        if(index!=-1){
+            currentTwitchFrequency=index;
+            currentTwitch=llList2Float(twitchFrequencies, currentTwitchFrequency+1);
+            if(currentTwitch==-1){ 
+                llSetTimerEvent(0.0);
+                llSetLinkPrimitiveParamsFast(LINK_THIS, [
+                    PRIM_ROT_LOCAL, llEuler2Rot((currentRotation+<6.0,0,0>)*DEG_TO_RAD),
+                    PRIM_ROT_LOCAL, llEuler2Rot((currentRotation)*DEG_TO_RAD)] );
+            }else{ 
+                llSetTimerEvent(currentTwitch);
+            }
+        }
+    }
+}
+
+//===========================================================================================================================
+//Expressions
+expressionCtl(string cmd, list params){
+    string name=llList2String(params, 0);
+    integer index=llListFindList(expressions, [name]);  
+    if(cmd=="add"){
+        if(index==-1){
+            index=llGetListLength(expressions);
+        }
+        expressions=llListReplaceList(expressions, [name, (vector)llList2String(params, 1)], index, index+2);
+    }else if(cmd=="inverted"){
+        rotInverted=llList2String(params, 0)=="on";
+    }else if(cmd=="set"){
+        if(index!=-1){
+            vector rot=llList2Vector(expressions, index+1);
+            if(rotInverted) rot=getInvertedRot(rot);
+            currentRotation=rot;
+            llSetLinkPrimitiveParamsFast(LINK_THIS, [PRIM_ROT_LOCAL, llEuler2Rot(rot * DEG_TO_RAD)] );
+        }
+    }else if(cmd=="rotation"){
+        string axis=llList2String(params, 1);
+        string param=llList2String(params, 2);
+        
+        vector rot=currentRotation; 
+        if(rotInverted) rot=getInvertedRot(rot);     
+            
+        if(axis=="x"){
+            if(param=="inc"){       rot.x+=10.0;
+            }else if(param=="dec"){ rot.x-=10.0;
+            }else                   rot.x =(float)param*360.0;
+        }else if(axis=="y"){
+            if(param=="inc"){       rot.y+=10.0;
+            }else if(param=="dec"){ rot.y-=10.0;
+            }else                   rot.y =(float)param*360.0;    
+        }else if(axis=="z"){
+            if(param=="inc"){       rot.z+=10.0;
+            }else if(param=="dec"){ rot.z-=10.0;
+            }else                   rot.z =(float)param*360.0; 
+        }else{
+            rot=(vector)axis;
+        }   
+        
+        expressions=llListReplaceList(expressions, [rot], index+1, index+1);
+    }
+}
+
+//===========================================================================================================================
+//States
+stateCtl(string cmd, list params){
+    string name=llList2String(params, 0);
+    integer index=llListFindList(state_settings, [name]);
+
+    if(cmd=="add"){
+        if(index==-1){
+            index=llGetListLength(state_settings);
+        }
+        state_settings=llListReplaceList(state_settings, [name, llList2String(params, 1)], index, index+1);
+        state_enabled=state_enabled|(1<<(index/2));
+        state_on = state_on & (~(1<<(index/2)));
+        
+    }else if(cmd=="switch"){
+        if(index!=-1){
+            integer switch=(llList2String(params, 1)=="on");
+            if(switch) state_on= state_on|(1<<(index/2));
+                else state_on = state_on & (~(1<<(index/2)));
+            reloadState(FALSE);
+        }
+
+    }else if(cmd=="enable"){
+        if(index!=-1){
+            integer switch=(llList2String(params, 1)=="on");
+            if(switch) state_enabled= state_enabled|(1<<(index/2));
+                else state_enabled = state_enabled & (~(1<<(index/2)));
+            reloadState(FALSE);
+        }
+
+    }else if(cmd=="expression"){
+        if(index!=-1){
+            cmd=llList2String(params, 1);
+            integer indexExp=llListFindList(expressions, [llList2String(state_settings, index+1)]);
+            indexExp=llListFindList(expressions, [cmd]);        
+                        
+            if(index!=-1){
+                state_settings=llListReplaceList(state_settings, [llList2String(expressions, indexExp)], index+1, index+1);
+            }
+            reloadState(TRUE);
+        }else llOwnerSay("Expression not found: "+name);
+
+    }else if(cmd=="rotation"){
+        if(index!=-1){
+            expressionCtl("rotation", [llList2String(state_settings, index+1)]+llList2List(params, 1, -1));  
+            reloadState(TRUE);          
+        }
+    }
+}
+//===========================================================================================================================
+//Dump
+string dumpSettings(){
+    list l=llList2ListStrided(llDeleteSubList(state_settings, 0,0), 0, -1, 2);
+    integer i;
+    for(i=0; i<llGetListLength(l); ++i){
+        l=llListReplaceList(l, [llListFindList(expressions, [llList2String(l, i)])/2], i, i);
+    }
+    
+    vector rot=currentRotation;
+    if(rotInverted) rot=getInvertedRot(rot);
+    
+    return 
+    llDumpList2String(IDs, ",")+";"+
+    llDumpList2String(l, ";")+";"+
+    (string)(rot.x/360.0)+";"+(string)(rot.y/360.0)+";"+(string)(rot.z/360.0)+";"+
+    (string)(currentTwitchFrequency/2)+";"+
+    (string)emoteEnabled;
+}
+
+//===========================================================================================================================
+//States
+
+reloadState(integer _forced){
+    integer effective=state_on & state_enabled;
+
+    //Search
+    integer i=llGetListLength(state_settings)>>1; //length/2
+    while(((effective&(1<<--i))==0) && (i>0));
+    i=i*2;
+    
+    if(_forced || (i!=state_current)){
+        state_current=i;
+        expressionCtl("set", [llList2String(state_settings, i+1)]);
+    }
+}
+//===========================================================================================================================
+vector getInvertedRot(vector v){
+    return <-v.x, v.y, 180.0-v.z>;
+    //return <180.0-v.x, -v.y, v.z>;
+}
+
+emoteCtl(string cmd, list params){
+    string name=llList2String(params, 0);
+    integer index=llListFindList(emotes, [name]);
+    if(cmd=="add"){
+        if(index==-1){
+            index=llGetListLength(emotes);
+        }
+        string ownerName=llKey2Name(owner);
+        string line=strReplace(llList2String(params, 1), "%O%", ownerName);        
+        line=strReplace(line, "%o%", llList2String(llParseString2List(ownerName, [" "], []), 0));
+        emotes=llListReplaceList(emotes, [name, line], index, index+1);
+    }else if(cmd=="enable"){
+        emoteEnabled=(name=="on");
+        if(!emoteEnabled){
+            llListenRemove(channelDialogsHandler);
+            activeListeners=0;            
+        }
+    }else if(cmd=="access"){
+        list tmp=llParseString2List(name, [","], []);
+        if(llListFindList(tmp, ["OWNER"])!=-1){
+            emoteAccess=emoteAccess|ACCESS_OWNER;
+        }
+        if(llListFindList(tmp, ["OTHERS"])!=-1){
+            emoteAccess=emoteAccess|ACCESS_OTHERS;
+        }        
+    }else if(cmd=="name"){
+        emoteObjectName=llList2String(params, 0);
+    }
+}
+
+string strReplace(string str, string search, string replace) {
+    return llDumpList2String(llParseStringKeepNulls((str = "") + str, [search], []), replace);
+}
+
+showDialog(key id, integer page){
+    list keywords=llList2ListStrided(emotes,0,-1,2);
+    
+    integer length=llGetListLength(keywords);
+    if(length>12){
+        integer min=(page*10);
+        integer max=(page*10)+9;
+        if(max>(length-1)) max=length-1;
+        
+        list l;
+        if(page==0){
+            l=llList2List(keywords, min, max)+[ "page "+((string)(page+1))];
+        }else if(page==(length/10)){
+            l=["page "+((string)(page-1))]+llList2List(keywords, min, max);
+        }else{
+            l=["page "+((string)(page-1))]+llList2List(keywords, min, max)+[ "page "+((string)(page+1))];
+        }
+        llDialog(id, llKey2Name(owner)+"'s gear", l, CHANNEL_DIALOGS);
+    }else{
+        llDialog(id, llKey2Name(owner)+"'s gear", keywords, CHANNEL_DIALOGS);
+    }
+}
+
+dialogCommand(key id, string cmd){
+    list l=llParseString2List(cmd, [" "], []);
+    if(llList2String(l, 0)=="page"){
+        showDialog(id, llList2Integer(l, 1));
+    }else{
+        integer index=llListFindList(emotes, [cmd]);
+        if(index!=-1){
+            string line=llList2String(emotes, index+1);
+            string name=llKey2Name(id);
+            line=strReplace(line, "%E%", name);
+            line=strReplace(line, "%e%",  llList2String(llParseString2List(name, [" "], []), 0));
+            line=strReplace(line, "%do%",  llGetDisplayName(owner));
+            line=strReplace(line, "%de%",  llGetDisplayName(id));
+            
+            string oldName=llGetObjectName();
+            llSetObjectName(strReplace(emoteObjectName, "%do%",  llGetDisplayName(owner)));
+            llSay(0, line);
+            llSetObjectName(oldName);
+        }
+    }
+}
+//===========================================================================================================================
+//===========================================================================================================================
+default
+{
+    state_entry(){
+        owner=llGetOwner();
+        kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+    }
+
+    changed(integer change){
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_INVENTORY) llResetScript(); 
+    }
+
+    dataserver(key query_id, string data){
+        if(query_id == kQuery){
+            if(data == EOF){
+                ++current_notecard;
+                string note=llGetScriptName()+"_"+NOTECARD+(string)current_notecard;
+                if(llGetInventoryType(note)!=INVENTORY_NONE){
+                    kQuery = llGetNotecardLine(note, iLine=0);
+                }else{
+                    state run;
+                }
+            }else{
+                ++iLine;
+                if(current_notecard!=0){
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD+(string)current_notecard, iLine);
+                }else{
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+                }
+
+                data=llStringTrim(data, STRING_TRIM);
+                if(llGetSubString(data, 0,0)!="#"){
+                    list l=llParseString2List(data, [":"], []);
+                    processCommand(llList2String(l, 0), llList2String(l, 1));
+                }
+            }
+        }
+    }
+}
+//===========================================================================================================================
+state run{
+    state_entry(){
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, "");
+        stateCtl("switch", ["default", "on"]);
+
+        if(currentTwitch!=-1) llSetTimerEvent(currentTwitch);
+        showFreeMemory();
+        reloadState(TRUE);
+    }
+    
+    timer(){
+        if(isClicked){
+            isClicked=FALSE;
+            stateCtl("switch", ["click","off"]);
+            currentTwitch=llList2Float(twitchFrequencies, currentTwitchFrequency+1);
+            if(currentTwitch==-1) llSetTimerEvent(0.0);
+            else llSetTimerEvent(currentTwitch);
+        }else{
+        
+            float rnd=llFrand(3.0);
+            if(rnd<1.0){
+                vector m=currentRotation;
+                
+                vector offset;
+                offset.x=rnd;
+                offset.y=llFrand(1.0-offset.x);
+                offset.z=1.0-offset.x-offset.y;
+                rotation r=llAxisAngle2Rot(offset, twitchOmega*DEG_TO_RAD);
+    
+                llSetLinkPrimitiveParamsFast(LINK_THIS, [PRIM_ROT_LOCAL, r*llEuler2Rot(currentRotation*DEG_TO_RAD)] );
+            }
+        }
+    }
+    
+    touch_start(integer num){
+        if(emoteEnabled){
+            clickTime=llGetTime(); 
+        }
+        stateCtl("switch", ["click","on"]);
+        isClicked=TRUE;
+        llSetTimerEvent(0.1);
+    }
+    
+    touch_end(integer total_number){
+        if(emoteEnabled){
+            float t=llGetTime()-clickTime;
+            if(t<=0.2){      
+                if((llGetUnixTime()-lastActiveTime)>30){
+                    llListenRemove(channelDialogsHandler);
+                    channelDialogsHandler=-1;
+                    activeListeners=0;
+                }
+                
+                if(channelDialogsHandler==-1){ 
+                    CHANNEL_DIALOGS=-20000-(integer)llFrand(10000);
+                    channelDialogsHandler=llListen(CHANNEL_DIALOGS, "", NULL_KEY, "");
+                }
+                if(activeListeners<5) ++activeListeners;
+                lastActiveTime=llGetUnixTime(); //In seconds
+                showDialog(llDetectedKey(0), 0);
+            } 
+        }
+    }
+    
+    changed(integer change){   
+        if(change&CHANGED_OWNER) llResetScript();
+        if(change&CHANGED_LINK) llResetScript();
+        if(change&CHANGED_INVENTORY) llResetScript();    
+    }
+
+
+    listen(integer channel, string name, key _id, string message){
+        if(channel==CHANNEL_DIALOGS){
+            dialogCommand(_id, message);
+            --activeListeners;
+            if(activeListeners<=0){ 
+                llListenRemove(channelDialogsHandler);
+                channelDialogsHandler=-1;
+            }
+        }else if(channel==CHANNEL){
+            if(llGetOwnerKey(_id)==owner){
+                list temp=llParseString2List(llStringTrim(message, STRING_TRIM), [":"], []);
+                if(llListFindList(IDs, [llList2String(temp, 0)])!=-1){
+                    processCommand(llList2String(temp, 1), llList2String(temp, 2));
+                }
+            }
+        }
+    }
+
+}
