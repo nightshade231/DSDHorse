@@ -1,0 +1,624 @@
+// V1.2
+//========== CommonscurrentButtons
+integer CHANNEL;
+integer giveDebug=FALSE;
+integer giveFeedback=TRUE;
+integer listenHandle;
+list IDs;
+key owner;
+
+list whiteList;
+
+//========== Notecard
+string NOTECARD="settings";
+key kQuery;
+integer current_notecard;
+integer iLine;    
+//================
+integer ASSIGNED_TEXTURE=0x01;
+integer ASSIGNED_TINT   =0x02;
+integer ASSIGNED_BLEND  =0x04;
+integer ASSIGNED_GLOW   =0x08;
+integer ASSIGNED_BRIGHT =0x10;
+integer ASSIGNED_MASK   =0x20;
+list areaList;//[name, [list_of_prims.face], assigned, current_tint, current_alpha, current_glow, current_bright, current_texture, [list_of_textures], [list_of_texture_id]]
+//list areaTextureBindList;//[texture_area, [list_of_textures], [list_of_texture_id]]
+
+list textureGroupList;//[name, [list_of_uuid]]
+//================
+string memoryID; 
+string memoryData;
+//================
+list switchableObjects;//[group_name, current_frame, frame_count, [frames]]
+list alphaMasks;//[group_name, [list_of_prims.face]]
+list blacklistMask;
+
+integer lastResendID;
+//===========================================================================================================================
+//===========================================================================================================================
+showFreeMemory(){
+    integer freemem = llGetFreeMemory();
+    if(llToLower( "Ü" ) == "Ü"){
+        integer memory = (integer)((float)freemem * 100.0 / 16384.0);
+        debug(llGetScriptName()+" "+(string)memory + "% memory free ("+(string)freemem+" Byte). LSO" );
+    }else{
+        integer memory = (integer)((float)freemem * 100.0 / 65536.0);
+        debug(llGetScriptName()+" "+(string)memory + "% memory free ("+(string)freemem+" Byte). Mono" );
+    }
+}
+
+debug(string s){
+    if(giveDebug) llOwnerSay(s);
+}
+
+feedback(string s){
+    if(giveFeedback) llOwnerSay(s);
+} 
+
+say(string msg){
+    llSay(CHANNEL, msg);
+}
+
+processCommand(string cmd, string param, key id){
+    list cmds=llParseString2List(llToLower(cmd), [";"], []);
+    list params=llParseString2List(param, [";"], []);
+    cmd=llList2String(cmds, 0);
+    param=llList2String(params, 0);
+    if(cmd=="channel"){
+        CHANNEL=(integer)param;
+        if(listenHandle!=-1) llListenRemove(listenHandle);
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, "");
+    }else if(cmd=="id"){
+        IDs=llParseString2List(param, [","], []);
+    }else if(cmd=="reset"){
+        llResetScript();
+    }else if(cmd=="memory"){
+        showFreeMemory();
+    }else if(cmd=="area"){
+        areaCtl(llList2List(cmds, 1, -1), params);
+    }else if(cmd=="texturegroup"){
+        textureCtl(llList2String(cmds, 1), params);
+    }else if(cmd=="save"){
+        areaCtl([llList2String(cmds, 1)], [param]);
+    }else if(cmd=="switchableobject"){
+        switchableObjectCtl(llList2String(cmds, 1), params);
+    }else if(cmd=="mask"){
+        maskCtl(llList2String(cmds, 1), params, id);
+    }
+}
+
+//===========================================================================================================================
+string IDlist2IntegerList(string sIDs){
+    list _IDs=llParseString2List(sIDs, [","], []);
+    //Face is stored in the 16 high bits, the prim/link number stored in the 16 low 
+    list result;
+    
+    integer i=0;
+    string oldName;
+    integer oldNum;
+    
+    
+    while(i<llGetListLength(_IDs)){        
+        list l=llParseString2List(llList2String(_IDs, i), ["."], []);
+        string currentName=llToLower(llList2String(l, 0));
+        integer currentNum;
+        if(currentName!=oldName){ //search prim
+            integer j=llGetNumberOfPrims();
+            while(j>0){
+                if(llToLower(llGetLinkName(j))==currentName){
+                    currentNum=j;
+                    j=0; //out of the loop
+                }
+                
+                --j;
+            }
+            
+        }else{
+            currentNum=oldNum;
+        }
+        oldName=currentName;
+        oldNum=currentNum;
+        
+        integer iFace;
+        
+        if(llList2String(l, 1)=="") iFace=-1; //No face explicitely defined
+            else iFace=llList2Integer(l, 1);
+            
+        if(iFace==-1){
+            //We add each face separately to workaround the face that we cannot set the alpha without the color ( so we'll need to get each face's color later... )
+            integer j=llGetLinkNumberOfSides(currentNum);
+            while(--j>=0){
+                result+=[( currentNum | (j<<16) )];
+            }
+            
+        }else{
+            result+=[( currentNum | (iFace<<16) )];
+        } 
+            
+        ++i; 
+    }
+    
+    return llDumpList2String(result, ",");
+}
+//===========================================================================================================================
+maskCtl(string cmd, list params, key id){
+    string name=llList2String(params, 0);
+    integer index=llListFindList(alphaMasks, [name]);
+    
+    integer resendID=llList2Integer(params, 1);
+    if(cmd=="repush"){
+        if((resendID==0) || (resendID==lastResendID)) cmd="push";
+    }
+    
+        
+    if(cmd=="add"){        
+        if(index==-1){
+            index=llGetListLength(alphaMasks);
+        }
+        alphaMasks=llListReplaceList(alphaMasks, [name, llList2String(params, 1)], index, index+1);
+    
+    }else if(cmd=="blacklist"){ 
+        blacklistMask+=llParseString2List(name, [","], []);
+        
+        
+    
+    }else if(cmd=="push"){
+        if(llListFindList(whiteList, [id])==-1){
+            whiteList+=id;
+            if(llGetListLength(whiteList)>32) whiteList=llList2List(whiteList, -32, -1);
+        }
+        
+        params=llParseString2List(name, [","], []);
+        index=llGetListLength(params);
+        while(--index>=0){
+            integer i=llListFindList(alphaMasks, [llList2String(params, index)]);
+            if(i!=-1){
+                params=llListReplaceList(params, [llList2String(alphaMasks, i+1)], index, index);
+            }
+        }
+        changePrimListStoredValue(llDumpList2String(params, ","), CPL_MASK, [1]);       
+
+    }else if(cmd=="pop"){
+        params=llParseString2List(name, [","], []);
+        index=llGetListLength(params);
+        while(--index>=0){
+            integer i=llListFindList(alphaMasks, [llList2String(params, index)]);
+            if(i!=-1){
+                params=llListReplaceList(params, [llList2String(alphaMasks, i+1)], index, index);
+            }
+        }
+        changePrimListStoredValue(llDumpList2String(params, ","), CPL_MASK, [-1]);        
+    
+    }else if(cmd=="init"){
+        
+        integer i;
+        for(i=llGetNumberOfPrims(); i>=0; --i){
+            string linkName=llGetLinkName(i);
+            if(llListFindList(blacklistMask, [linkName])==-1) changePrimListStoredValue(linkName, CPL_MASK, [0]);
+        }
+    }else if(cmd=="reset"){
+        for(index=0; index<llGetListLength(alphaMasks); index+=2){
+            changePrimListStoredValue(llList2String(alphaMasks, index+1), CPL_MASK, [0]);
+        }
+            
+    }else if(cmd=="renew"){
+        integer i;
+        for(i=llGetNumberOfPrims(); i>=0; --i){
+            /*integer j;
+            for(j=llGetLinkNumberOfSides(i)-1; j>=0; --j){
+                linkStr+=llGetLinkName(i)+"."+(string)j+",";
+            }*/
+            string linkName=llGetLinkName(i);
+            if(llListFindList(blacklistMask, [linkName])==-1) changePrimListStoredValue(linkName, CPL_MASK, [0]);
+        }
+        lastResendID=(integer)llFrand(99999999);
+        say("all:mask;resend:"+(string)lastResendID);
+    }
+}
+
+switchableObjectCtl(string cmd, list params){
+    //list switchableObjects;//[group_name, current_frame, frame_count, [frames_name, frame]]
+    string groupName=llList2String(params, 0);
+    if(cmd=="add"){
+        integer indexGroup=llListFindList(switchableObjects, [groupName]);
+        if(indexGroup==-1){
+            indexGroup=llGetListLength(switchableObjects);
+            switchableObjects+=[groupName, -1, 0];
+        }
+        integer frameCount=llList2Integer(switchableObjects, indexGroup+2);
+        list temp=llList2List(switchableObjects, indexGroup+3, indexGroup+3+(frameCount*2));
+        
+        string frameName=llList2String(params, 1);
+        integer indexFrame=llListFindList(temp, [frameName]);
+        if(indexFrame==-1){
+            switchableObjects=llListInsertList(switchableObjects, [frameName, llList2String(params, 2)], indexGroup+3+(frameCount*2));
+            changePrimListStoredValue(llList2String(params, 2), CPL_SWITCH, [ 1]);
+            switchableObjects=llListReplaceList(switchableObjects, [frameCount+1], indexGroup+2, indexGroup+2);
+        } 
+        
+    }else if(cmd=="set"){
+        integer indexGroup=llListFindList(switchableObjects, [groupName]);
+        if(indexGroup!=-1){
+            integer currentFrame=llList2Integer(switchableObjects, indexGroup+1);
+            
+            integer frameCount=llList2Integer(switchableObjects, indexGroup+2);
+            list temp=llList2List(switchableObjects, indexGroup+3, indexGroup+3+(frameCount*2));
+            string frameName=llList2String(params, 1);
+            integer indexFrame=llListFindList(temp, [frameName]);
+            if(indexFrame!=-1){
+                if(indexFrame!=currentFrame){
+                    if(currentFrame!=-1){
+                        changePrimListStoredValue(llList2String(switchableObjects, indexGroup+3+currentFrame+1), CPL_SWITCH, [ 1]); //Hide old frame
+                    }else{
+                        /*string frameHide;
+                        while(--frameCount>=0){
+                            if((frameCount*2)!=indexFrame){
+                                frameHide+=llList2String(switchableObjects, indexGroup+3+(frameCount*2)+1)+",";
+                            }
+                        }
+                        debug("Hide:"+frameHide);
+                        changePrimListStoredValue(frameHide, CPL_SWITCH, [ 0]); //Hide old frame*/
+                    }
+                    
+                    switchableObjects=llListReplaceList(switchableObjects, [indexFrame], indexGroup+1, indexGroup+1); //Update current frame
+                    
+                
+                    changePrimListStoredValue(llList2String(switchableObjects, indexGroup+3+indexFrame+1), CPL_SWITCH, [-1]); //Show new frames
+                }  
+            }
+        }
+    }
+}
+//===========================================================================================================================
+integer CPL_UPDATE=0;
+integer CPL_MASK  =1;
+integer CPL_BLEND =4;
+integer CPL_GLOW  =5;
+integer CPL_SWITCH=6;
+integer CPL_TINT  =7;
+integer CPL_BRIGHT=8;
+integer CPL_ALPHA =9;
+changePrimListStoredValue(string _IDs, integer action, list value){
+    integer intValue=llList2Integer(value, 0);
+    float floatValue=llList2Float(value, 0);
+    integer mask;
+    float blend;
+    float glow;
+    integer switch;
+    vector tint;
+    integer bright;
+    
+    integer alphaMode;
+    integer alphaCut;
+    
+    
+    list prims=llParseString2List(IDlist2IntegerList(_IDs), [","], []);
+    integer i=llGetListLength(prims);
+    while(--i>=0){
+        
+        integer prim=llList2Integer(prims, i);
+        integer face=prim>>16;
+        prim=(prim&0xFFFF);
+        
+        list temp=llGetLinkPrimitiveParams(prim, [PRIM_DESC, PRIM_COLOR, face, PRIM_ALPHA_MODE, face, PRIM_GLOW, face, PRIM_FULLBRIGHT, face]);
+        //desc, color, alpha, bright
+        
+        list desc=llParseString2List(llList2String(temp, 0), [";"], []);
+        integer sides=llGetLinkNumberOfSides(prim);
+        if(face>=sides) jump loop_continue;
+        
+        
+        if(sides!=(llGetListLength(desc)/5)){ //Initialize
+            desc=[];
+            while(--sides>=0){
+                list temp2=llGetLinkPrimitiveParams(prim, [PRIM_COLOR, sides, PRIM_ALPHA_MODE, sides]);
+                integer mode=llList2Integer(temp2, 2);
+                if(mode==PRIM_ALPHA_MODE_NONE) mode=0;
+                else if(mode==PRIM_ALPHA_MODE_BLEND) mode=-1;
+                else mode=llList2Integer(temp2, 1);
+                
+                //mask; switch; glow; blend; alpha
+                desc+=[0, 0, (integer)(llList2Float(temp2, 4)*100.0), (integer)(llList2Float(temp2, 1)*100.0), mode];
+            }
+        }
+
+        mask=llList2Integer(desc, (face*5)+0); 
+        switch=llList2Integer(desc, (face*5)+1);
+        tint=llList2Vector(temp, 1);
+        bright=llList2Integer(temp, 6);
+        glow=(float)llList2Integer(desc, (face*5)+2)/100.0;
+        blend=(float)llList2Integer(desc, (face*5)+3)/100.0;
+        integer alphaModeE=llList2Integer(desc, (face*5)+4);
+        
+        if(alphaModeE==0){
+            alphaMode=PRIM_ALPHA_MODE_NONE;
+            alphaCut=0;
+        }else if(alphaModeE==-1){
+            alphaMode=PRIM_ALPHA_MODE_BLEND;
+            alphaCut=0;
+        }else{
+            alphaCut=alphaModeE;
+            alphaMode=PRIM_ALPHA_MODE_MASK;
+        }
+        
+        if(action==CPL_MASK){ 
+            if(intValue==0){ //Force Mask
+                mask=0;
+            }else{
+                mask+=intValue;
+            }
+            
+        }else if(action==CPL_SWITCH){
+            switch+=intValue;
+        }else if(action==CPL_GLOW){ 
+            glow=floatValue;
+        }else if(action==CPL_TINT){
+            tint=llList2Vector(value, 0);
+        }else if(action==CPL_BRIGHT){
+            bright=intValue;
+        }else if(action==CPL_BLEND){
+            blend=floatValue;
+        }else if(action==CPL_ALPHA){
+            alphaCut=0;
+            alphaModeE=alphaMode=intValue;
+            if(intValue>0){
+                alphaCut=intValue;
+                alphaMode=PRIM_ALPHA_MODE_MASK;
+            }
+        }
+        if(mask<0) mask=0;
+        if(switch<0) switch=0;
+        
+        desc=llListReplaceList(desc, [mask, switch, (integer)(glow*100.0), (integer)(blend*100.0), alphaModeE], (face*5), (face*5)+4);
+        
+        if((mask!=0) || (switch!=0) || (blend==0.0)){
+            llSetLinkPrimitiveParamsFast(prim, [PRIM_DESC, llDumpList2String(desc, ";"), PRIM_COLOR, face, tint, 0.0, PRIM_GLOW, face, 0.0, PRIM_FULLBRIGHT, face, bright,
+                PRIM_ALPHA_MODE, face, alphaMode, alphaCut]);
+        }else{
+            llSetLinkPrimitiveParamsFast(prim, [PRIM_DESC, llDumpList2String(desc, ";"), PRIM_COLOR, face, tint, blend, PRIM_GLOW, face, glow, PRIM_FULLBRIGHT, face, bright,
+                PRIM_ALPHA_MODE, face, alphaMode, alphaCut]);
+        }
+        
+        @loop_continue;
+    }
+}
+
+changeTexture(list area, list textures, list textureIDs){
+    list params;
+    
+    integer i=llGetListLength(area);
+    while(--i>=0){
+        list temp=llParseString2List(llList2String(area, i), ["."], []);
+        
+        integer linkNum=findPrim(llList2String(temp, 0));
+        //llOwnerSay("link fround at:"+(string)linkNum);
+        if(linkNum!=-1){
+            string texture=llList2String(textures, llList2Integer(textureIDs, i%llGetListLength(textureIDs)));
+            integer face;
+            if(llList2String(temp, 1)==""){
+                face=-1;
+            }else{
+                face=llList2Integer(temp, 1);
+            }
+            
+            //llOwnerSay("set "+texture+" to "+llList2String(temp, 0)+" "+(string)face);
+            
+            if(face==-1){
+                integer j=llGetLinkNumberOfSides(linkNum);
+                while(--j>=0){
+                    params=llGetLinkPrimitiveParams(linkNum, [PRIM_TEXTURE, j]);
+                    llSetLinkPrimitiveParamsFast(linkNum, [PRIM_TEXTURE, j, texture]+llList2List(params, 1, -1));
+                }
+                
+            }else{
+                if(face<llGetLinkNumberOfSides(linkNum)){
+                    params=llGetLinkPrimitiveParams(linkNum, [PRIM_TEXTURE, face]);
+                    llSetLinkPrimitiveParamsFast(linkNum, [PRIM_TEXTURE, face, texture]+llList2List(params, 1, -1));
+                }
+            }            
+        }
+    }
+}
+
+//===========================================================================================================================
+areaCtl(list cmds, list params){
+    //list areaList;//[name, [list_of_prims.face], assigned, current_tint, current_alpha, current_glow, current_bright, current_texture, [list_of_texturesGroup], [list_of_texture_id]]
+    string cmd=llList2String(cmds, 0);
+    string name=llList2String(params, 0);
+    integer index=llListFindList(areaList, [name]);
+    if(cmd=="add"){
+        if(index==-1){
+            index=llGetListLength(areaList);
+        }
+        //name, list, assigned, texture, tint, alpha, glow, bright
+        areaList=llListReplaceList(areaList, [llList2String(params, 0), llList2String(params, 1), 0/*assigned*/, ZERO_VECTOR, 0.0, 0.0, FALSE, "", ""], index, index+8);
+        
+    }else if(cmd=="bind"){
+        if(index!=-1){
+            areaList=llListReplaceList(areaList, [llList2String(params, 1), llList2String(params, 2)], index+8, index+9);
+        }        
+    }else if(cmd=="texture"){
+        if(index!=-1){
+            list boundTextures=llParseString2List(llList2String(areaList, index+8), [","], []); //get every textures bound to that area
+            if(llGetListLength(boundTextures)==0) return; //No texture bound
+            
+            integer indexTextureGroup=llListFindList(areaList, [llList2String(areaList, index+7)]);
+            cmd=llList2String(params, 1);
+            if(cmd=="prev"){
+                --indexTextureGroup;
+            }else if(cmd=="next"){
+                ++indexTextureGroup;
+            }else{
+                indexTextureGroup=llListFindList(boundTextures, [cmd]);
+            }
+            if(indexTextureGroup<0) indexTextureGroup=llGetListLength(boundTextures)-1;
+            if(indexTextureGroup>=llGetListLength(boundTextures)) indexTextureGroup=0;
+            
+            
+            string currentTexture=llList2String(boundTextures, indexTextureGroup);
+            indexTextureGroup=llListFindList(textureGroupList, [currentTexture]);
+            
+            if(indexTextureGroup!=-1){
+                list tempTextures=llParseString2List(llList2String(textureGroupList, indexTextureGroup+1), [","], []);
+                list tempArea    =llParseString2List(llList2String(areaList, index+1), [","], []);
+                list tempIDs     =llParseString2List(llList2String(areaList, index+9), [","], []); //get textures IDs to that area
+                
+                changeTexture(tempArea, tempTextures, tempIDs);
+                
+                areaList=llListReplaceList(areaList, [llList2Integer(areaList, index+2)|ASSIGNED_TEXTURE], index+2, index+2); //Set the texture has been assigned
+                areaList=llListReplaceList(areaList, [currentTexture], index+7, index+7); //Replacing active texture
+            }else{
+                feedback("texture not found: "+currentTexture+" in "+llList2CSV(textureGroupList));
+            }   
+        }else{
+            feedback("area not found "+llList2String(params, 0));
+        }
+        
+    }else if(cmd=="ctexture"){
+            string pass = llGetOwner(); 
+            string data = llList2String(params, 1);
+            string decrypt=llXorBase64StringsCorrect(data, llStringToBase64("bca6a0e9-2da0-d509-3895-3504f71768c9"));
+            decrypt=llBase64ToString(llXorBase64StringsCorrect(decrypt, llStringToBase64(pass)));
+                    
+            changeTexture(llParseString2List(name, [","], []) ,  [decrypt], [0]);
+                    
+    }else if((cmd=="tint") || (cmd=="color")){
+        if(index!=-1){ 
+            vector newTint=(vector)llList2String(params, 1);
+            
+            areaList=llListReplaceList(areaList, [llList2Integer(areaList, index+2)|ASSIGNED_TINT], index+2, index+2); //Set the tint has been assigned
+            areaList=llListReplaceList(areaList, [newTint], index+3, index+3); //Set the tint Value
+            
+            changePrimListStoredValue(llList2String(areaList, index+1), CPL_TINT, [newTint]);
+        }
+    }else if(cmd=="blend"){
+        float newAlpha=llList2Float(params, 1);
+        if(index!=-1){
+            areaList=llListReplaceList(areaList, [llList2Integer(areaList, index+2)|ASSIGNED_BLEND], index+2, index+2); //Set the alpha has been assigned
+            areaList=llListReplaceList(areaList, [newAlpha], index+4, index+4); //Set the alpha Value
+            
+            changePrimListStoredValue(llList2String(areaList, index+1), CPL_BLEND, [newAlpha]);
+            
+        }else changePrimListStoredValue(name, CPL_BLEND, [newAlpha]);
+    }else if(cmd=="mask"){
+        float newAlpha=llList2Float(params, 1);
+        if(index!=-1){
+            areaList=llListReplaceList(areaList, [llList2Integer(areaList, index+2)|ASSIGNED_MASK], index+2, index+2); //Set the alpha has been assigned
+            areaList=llListReplaceList(areaList, [newAlpha], index+4, index+4); //Set the alpha Value
+            
+            changePrimListStoredValue(llList2String(areaList, index+1), CPL_ALPHA, [newAlpha]);
+            
+        }else changePrimListStoredValue(name, CPL_ALPHA, [newAlpha]);
+    }else if(cmd=="glow"){
+        if(index!=-1){
+            float newGlow=llList2Float(params, 1);
+            areaList=llListReplaceList(areaList, [llList2Integer(areaList, index+2)|ASSIGNED_GLOW], index+2, index+2); //Set the glow has been assigned
+            areaList=llListReplaceList(areaList, [newGlow], index+5, index+5); //Set the glow Value
+            
+            changePrimListStoredValue(llList2String(areaList, index+1), CPL_GLOW, [newGlow]);
+            
+        }
+    }else if(cmd=="bright"){
+        if(index!=-1){
+            integer newBright=(integer)llList2String(params, 1);
+            
+            areaList=llListReplaceList(areaList, [llList2Integer(areaList, index+2)|ASSIGNED_BRIGHT], index+2, index+2); //Set the glow has been assigned
+            areaList=llListReplaceList(areaList, [newBright], index+6, index+6); //Set the glow Value
+            
+            changePrimListStoredValue(llList2String(areaList, index+1), CPL_BRIGHT, [newBright]);
+            
+        }
+    
+    }else if(cmd=="dump"){
+        debug("dump");
+    }
+}
+
+textureCtl(string cmd, list params){
+    if(cmd=="add"){
+        integer index=llListFindList(textureGroupList, [llList2String(params, 0)]);
+        if(index==-1){
+            index=llGetListLength(textureGroupList);
+            textureGroupList+=[llList2String(params, 0), llList2String(params, 1)];
+        }else{
+            textureGroupList=llListReplaceList(textureGroupList, [llList2String(params, 0), llList2String(textureGroupList, index+1)+","+llList2String(params, 1)], index, index+1);
+        }
+    }
+}
+
+
+
+//===========================================================================================================================
+integer findPrim(string name){
+    integer i=llGetNumberOfPrims();
+    while(i>=0){            
+        if(llGetLinkName(i)==name){
+            return i;
+        }
+        --i;
+    }
+    return -1;
+}
+
+//===========================================================================================================================
+//===========================================================================================================================
+default
+{
+    state_entry(){
+        llSetLinkAlpha(LINK_SET, 1.0, ALL_SIDES);
+        llSetLinkAlpha(LINK_ROOT, 0.0, ALL_SIDES);
+        llSetLinkPrimitiveParamsFast(LINK_SET, [PRIM_DESC, "", PRIM_ALPHA_MODE, ALL_SIDES, PRIM_ALPHA_MODE_NONE, 0]);
+        
+        owner=llGetOwner();
+        kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+    }
+
+    changed(integer change){
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_INVENTORY) llResetScript(); 
+    }
+     
+    dataserver(key query_id, string data){
+        if(query_id == kQuery){
+            if(data == EOF){
+                state run;
+            }else{
+                ++iLine;
+                kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+
+                data=llStringTrim(data, STRING_TRIM);
+                if((data!="") && (llGetSubString(data, 0,0)!="#")){
+                    list l=llParseString2List(data, [":"], []);
+                    processCommand(llList2String(l, 0), llList2String(l, 1), NULL_KEY);
+                }
+            }
+        }
+    }
+}
+//===========================================================================================================================
+state run
+{
+    state_entry(){
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, "");
+        
+        showFreeMemory(); 
+    }
+
+    changed(integer change){
+        if(change&CHANGED_OWNER) llResetScript();
+        if(change&CHANGED_LINK) llResetScript();
+    }
+     
+    listen(integer channel, string name, key _id, string message){
+        if((llGetOwnerKey(_id)==owner) || (llListFindList(whiteList, [_id])!=-1)){
+            
+            
+            
+            list temp=llParseString2List(llStringTrim(message, STRING_TRIM), [":"], []);
+            if(llListFindList(IDs, [llList2String(temp, 0)])!=-1){
+                processCommand(llList2String(temp, 1), llList2String(temp, 2), _id);
+            }
+        }
+    }
+
+}
