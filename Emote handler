@@ -1,0 +1,229 @@
+//========== Commons
+integer CHANNEL;
+integer giveDebug;
+integer giveFeedback;
+integer listenHandle;
+list IDs;
+key owner;
+
+//========== Notecard
+string NOTECARD="settings";
+key kQuery;
+integer current_notecard;
+integer iLine;
+//======================================================
+//Emotes
+float clickTime;
+integer CHANNEL_DIALOGS; //randomized
+integer channelDialogsHandler;
+integer emoteEnabled;
+list emotes;
+string emoteObjectName;
+//===========================================================================================================================
+//===========================================================================================================================
+
+showFreeMemory(){
+    integer freemem = llGetFreeMemory(); 
+    if(llToLower( "Ü" ) == "Ü"){
+        integer memory = (integer)((float)freemem * 100.0 / 16384.0);
+        debug( (string)memory + "% memory free ("+(string)freemem+" Byte). LSO" );
+    }else{
+        integer memory = (integer)((float)freemem * 100.0 / 65536.0);
+        debug( (string)memory + "% memory free ("+(string)freemem+" Byte). Mono" );
+    }
+}
+
+integer getChannel(string _chan){
+    if(_chan=="dynamic"){
+        return -8388608-(integer)("0x"+llList2String(llParseString2List(llGetOwner(), ["-"], []), 2));
+    }else return (integer)_chan;
+}
+
+debug(string s){ 
+    if(giveDebug) llOwnerSay(s);
+}
+feedback(string s){
+    if(giveFeedback!=0) llOwnerSay(s);
+}
+
+
+processCommand(string cmd, string param){ 
+    list cmds=llParseString2List(llToLower(cmd), [";"], []);
+    list params=llParseString2List(param, [";"], []);
+    cmd=llList2String(cmds, 0);
+    param=llList2String(params, 0);
+    if(cmd=="channel"){
+        CHANNEL=getChannel(param);
+        if(listenHandle!=-1) llListenRemove(listenHandle);
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, "");
+    }else if(cmd=="reset"){
+        llResetScript();
+    }else if(cmd=="id"){
+        IDs=llParseString2List(param, [","], []);
+    }else if(cmd=="feedback"){
+        if(param=="on") giveFeedback++; else giveFeedback--;
+    }else if(cmd=="debug"){
+        giveDebug=(param=="on");
+    }else if(cmd=="emote"){
+        emoteCtl(llList2String(cmds, 1), params);  
+    }
+}
+//=============================================================================
+//Emotes
+emoteCtl(string cmd, list params){
+    string name=llList2String(params, 0);
+    integer index=llListFindList(emotes, [name]);
+    if(cmd=="add"){
+        if(index==-1){
+            index=llGetListLength(emotes);
+        }
+        string ownerName=llKey2Name(owner);
+        string line=strReplace(llList2String(params, 1), "%O%", ownerName);        
+        line=strReplace(line, "%o%", llList2String(llParseString2List(ownerName, [" "], []), 0));
+        emotes=llListReplaceList(emotes, [name, line], index, index+1);
+    }else if(cmd=="enable"){
+        emoteEnabled=(name=="on");
+        if(emoteEnabled){
+            channelDialogsHandler=llListen(CHANNEL_DIALOGS, "", NULL_KEY, "");
+        }else{
+            llListenRemove(channelDialogsHandler);
+        }
+    }else if(cmd=="name"){
+        emoteObjectName=llList2String(params, 0);
+    }
+}
+
+string strReplace(string str, string search, string replace) {
+    return llDumpList2String(llParseStringKeepNulls((str = "") + str, [search], []), replace);
+}
+
+showDialog(key id, integer page){
+    list keywords=llList2ListStrided(emotes,0,-1,2);
+    
+    integer length=llGetListLength(keywords);
+    if(length>12){
+        integer min=(page*10);
+        integer max=(page*10)+9;
+        if(max>(length-1)) max=length-1;
+        
+        list l;
+        if(page==0){
+            l=llList2List(keywords, min, max)+[ "page "+((string)(page+1))];
+        }else if(page==(length/10)){
+            l=["page "+((string)(page-1))]+llList2List(keywords, min, max);
+        }else{
+            l=["page "+((string)(page-1))]+llList2List(keywords, min, max)+[ "page "+((string)(page+1))];
+        }
+        llDialog(id, llKey2Name(owner)+"'s gear", l, CHANNEL_DIALOGS);
+    }else{
+        llDialog(id, llKey2Name(owner)+"'s gear", keywords, CHANNEL_DIALOGS);
+    }
+}
+
+dialogCommand(key id, string cmd){
+    list l=llParseString2List(cmd, [" "], []);
+    if(llList2String(l, 0)=="page"){
+        showDialog(id, llList2Integer(l, 1));
+    }else{
+        integer index=llListFindList(emotes, [cmd]);
+        if(index!=-1){
+            string line=llList2String(emotes, index+1);
+            string name=llKey2Name(id);
+            line=strReplace(line, "%E%", name);
+            line=strReplace(line, "%e%",  llList2String(llParseString2List(name, [" "], []), 0));
+            line=strReplace(line, "%do%",  llGetDisplayName(owner));
+            line=strReplace(line, "%de%",  llGetDisplayName(id));
+            
+            string oldName=llGetObjectName();
+            llSetObjectName(strReplace(emoteObjectName, "%do%",  llGetDisplayName(owner)));
+            llSay(0, line);
+            llSetObjectName(oldName);
+        }
+    }
+}
+//======================================================================================
+//======================================================================================
+default 
+{
+    state_entry(){
+        owner=llGetOwner();
+        kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+    }
+
+    changed(integer change){ 
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_INVENTORY) llResetScript(); 
+    }
+
+    dataserver(key query_id, string data){
+        if(query_id == kQuery){
+            if(data == EOF){
+                ++current_notecard;
+                string note=llGetScriptName()+"_"+NOTECARD+" "+(string)current_notecard;
+                if(llGetInventoryType(note)!=INVENTORY_NONE){
+                    kQuery = llGetNotecardLine(note, iLine=0);
+                }else{
+                    state run;
+                }
+            }else{
+                ++iLine;
+                if(current_notecard!=0){
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD+" "+(string)current_notecard, iLine);
+                }else{
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+                }
+
+                data=llStringTrim(data, STRING_TRIM);
+                if(llGetSubString(data, 0,0)!="#"){
+                    list l=llParseString2List(data, [":"], []);
+                    processCommand(llList2String(l, 0), llList2String(l, 1));
+                }
+            }
+        }
+    }
+}
+
+//======================================================================================
+
+state run{
+    state_entry(){ 
+        CHANNEL_DIALOGS=-20000-(integer)llFrand(10000);
+        if(emoteEnabled) channelDialogsHandler=llListen(CHANNEL_DIALOGS, "", NULL_KEY, "");
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, "");
+        showFreeMemory();
+    }
+
+    changed(integer change){
+        if(change&CHANGED_OWNER)llResetScript();
+        if(change&CHANGED_INVENTORY)llResetScript();
+        if(change&CHANGED_LINK)llResetScript();
+    }
+    
+    touch_start(integer num){
+        if(emoteEnabled){
+            clickTime=llGetTime(); 
+        }
+    }
+    
+    touch_end(integer total_number){
+        if(emoteEnabled){
+            float t=llGetTime()-clickTime;
+            if(t<=0.2){        
+                showDialog(llDetectedKey(0), 0);
+            }       
+        }
+    }
+    
+    listen(integer channel, string name, key _id, string message){
+        if(channel==CHANNEL_DIALOGS){
+            dialogCommand(_id, message);
+        }else{
+            if(llGetOwnerKey(_id)==owner){
+                list temp=llParseString2List(llStringTrim(message, STRING_TRIM), [":"], []);
+                if(llListFindList(IDs, [llList2String(temp, 0)])!=-1){
+                    processCommand(llList2String(temp, 1), llList2String(temp, 2));
+                }
+            }
+        }
+    }    
+}
