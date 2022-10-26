@@ -1,0 +1,339 @@
+//========== Commons
+integer CHANNEL;
+integer giveDebug;
+integer giveFeedback;
+integer listenHandle;
+list IDs;
+key owner;
+
+integer scriptRunning=FALSE;
+
+//========== Notecard
+string NOTECARD="settings";
+key kQuery; 
+integer current_notecard;
+integer iLine;
+
+//================================================================================
+integer wag = TRUE;
+float dTimer = 10; //Delay timer for a slight pause at each end of the swing.
+vector tDelay = <0.1, 0.5, 0>; //Min and max delay for side to side swing of horse tail
+integer type = 0;
+float force = 0;
+float fRate = 0;
+float fForce = 0;
+float fFRate = 0;
+float speed = 0;
+vector wRange = <3, 9, 0>; //This is max and min delay between the left and right movement for the wag
+vector fWRange = <0.1, 0.4, 0>; //This is max and min delay between the left and right movement for the wag. Flexi-based.
+vector fRange = <-30, 30, 0>; //Min and max force. Makes it so we stop before it flies way off to the side. Also kind of our thing to make it go left and right.
+vector fFRange = <-1.2, 1.2, 0>; //Min and max force. Makes it so we stop before it flies way off to the side. Also kind of our thing to make it go left and right. Flexi-based.
+list defaults = [];
+float position = 0;
+float fluffScale = 0.5;
+float lengthScale = 0.5;
+//================================================================================
+//================================================================================
+showFreeMemory(){ 
+    integer freemem = llGetFreeMemory(); 
+    integer memory = (integer)((float)freemem * 100.0 / 65536.0);
+    llOwnerSay( (string)memory + "% memory free ("+(string)freemem+" Byte). Mono" );
+}
+
+debug(string s){ 
+    if(giveDebug) llOwnerSay(s);
+}
+feedback(string s){
+    if(giveFeedback!=0) llOwnerSay(s);
+}
+
+processCommand(string cmd, string param){ 
+    list cmds=llParseString2List(llToLower(cmd), [";"], []);
+    list params=llParseString2List(param, [";"], []);
+    cmd=llList2String(cmds, 0);
+    param=llList2String(params, 0);
+    if(cmd=="channel"){
+        CHANNEL=(integer)param;
+        if(listenHandle!=-1) llListenRemove(listenHandle);
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, "");
+    }else if(cmd=="reset"){
+        llResetScript();
+    }else if(cmd=="id"){
+        IDs=llParseString2List(param, [","], []);
+    }else if(cmd=="feedback"){
+        if(param=="on") giveFeedback++; else giveFeedback--;
+    }else if(cmd=="debug"){
+        giveDebug=(param=="on");
+    }else if(cmd=="shape"){       
+        shapeCtl(llList2String(cmds, 1), params);
+    }else if(cmd=="preset"){       
+        presetCtl(llList2String(cmds, 1), params);
+    }else if(cmd=="prim_add"){
+        grabParams(params);
+    }
+}
+
+
+shapeCtl(string cmd, list params){
+    
+    float value=llList2Float(params, 0);
+    if(cmd=="length"){
+        lengthScale=value;
+    }else if(cmd=="width"){
+        fluffScale=value;
+    }
+    
+    setSize();
+}
+ 
+presetCtl(string cmd, list params){  
+    
+    if(cmd=="flex"){        
+        cmd=llList2String(params, 0); 
+        if(cmd=="speed"){   
+            speed = llList2Float(params, 1);
+            if (!wag) { fRate = 0; fFRate = 0;}
+            else { fRate = (wRange.y-wRange.x)*speed + wRange.x; fFRate = (fWRange.y-fWRange.x)*speed + fWRange.x;}
+            force = 0;
+            fForce = 0;
+            dTimer = tDelay.y+0.5;
+            setTailRot();
+            
+            integer w=wag;
+            presetCtl("flex", ["enable", "off"]);
+            if(w) presetCtl("flex", ["enable", "on"]);
+            
+            
+            
+        }else if(cmd=="lift"){    
+            position = llList2Float(params, 1);
+            integer w=wag;
+            presetCtl("flex", ["enable", "off"]);
+            if(w) presetCtl("flex", ["enable", "on"]);
+            
+        }else if(cmd=="enable"){
+            wag = (integer)(llList2String(params, 1)=="on");
+            if (!wag) { fRate = 0; fFRate = 0;}
+            else { fRate = (wRange.y-wRange.x)*speed + wRange.x; fFRate = (fWRange.y-fWRange.x)*speed + fWRange.x;}
+            force = 0;
+            fForce = 0;
+            dTimer = tDelay.y+0.5;
+            setTailRot();   
+        }
+        
+        setFlexi();
+    }
+    
+}
+ 
+
+//================================================================================
+
+list getDefaults ()
+{
+    return defaults;
+}
+
+float scaleFloat(float value, float min, float max, integer round){
+    value=(value*(max-min))+min;
+    if(round) value=(integer)value;
+    return value;
+}
+float getConstrainedValue(float value, vector constraint){
+    if(value==-1){
+        return llFrand(constraint.z*2)+(constraint.x-constraint.z);
+    }else{
+        return scaleFloat(value, constraint.x-constraint.y, constraint.x+constraint.y, FALSE);
+    }
+}
+setSize ()
+{
+    float effectiveFluffScale=scaleFloat(fluffScale, 0.5, 1.5, FALSE);
+    float effectiveLengthScale=scaleFloat(lengthScale, 0.5, 1.5, FALSE);
+    
+    
+    list params = getDefaults();
+    list tParams = [];
+    integer n = llGetListLength(params)/4;
+    integer i = 0;
+    vector size;
+    vector pos;
+    vector taper;
+    float rot = 282*DEG_TO_RAD;
+    float defLen;
+    list p = [];
+    for (; i < n; i++)
+    {
+        size = llList2Vector(params, i*4+2);
+        pos = llList2Vector(params, i*4+1);
+        taper = llList2Vector(params, i*4+3);
+        tParams = llGetLinkPrimitiveParams(llList2Integer(params, i*4), [PRIM_TYPE]);
+        taper.x = 2 - ((2-taper.x)*1/effectiveFluffScale);
+        taper.y = 2 - ((2-taper.y)*1/effectiveFluffScale);
+        defLen = size.z;
+        size.x *= effectiveFluffScale;
+        size.y *= effectiveFluffScale;
+        size.z *= effectiveLengthScale;
+        pos.z -= ((defLen-size.z)/2*llSin(rot));
+        pos.x -= ((defLen-size.z)/2*llCos(rot));
+        tParams = llListReplaceList(tParams, [taper], 5, 5);
+        p += [PRIM_LINK_TARGET, llList2Integer(params, i*4), PRIM_SIZE, size, PRIM_POS_LOCAL, pos, PRIM_TYPE] + tParams;
+    }
+    llSetLinkPrimitiveParamsFast(1, p);
+    setFlexi();
+}
+
+
+grabParams(list p)
+{
+    list params = [];
+    integer isFlexi = FALSE;
+    list dump = [];
+    integer i = 1;
+    for (; i <= llGetNumberOfPrims(); i++){
+        if(llGetLinkName(i)==llList2String(p, 0)){
+            defaults += [i, (vector)llList2String(p, 1), (vector)llList2String(p, 2), (vector)llList2String(p, 3)];
+        }
+    }
+}
+
+list getLinks ()
+{
+    return llList2ListStrided(defaults, 0, -1, 4);
+    //Put the link numbers that are flexi in this list so we know which ones to play with. Separate with commas.
+}
+
+setFlexi (){
+    list lns = getLinks();
+    list t = [];
+    integer i = 0;
+    rotation aRot = llGetRootRotation();
+    vector vRot = llRot2Euler(aRot);
+    vector vForce = <0, 0, 0>;
+    if (vRot.z < 0) vRot.z *= -1;
+    if (vRot.z > PI_BY_TWO){
+        vRot.z -= PI_BY_TWO;
+        vForce = <((PI_BY_TWO-vRot.z)/PI_BY_TWO)*fForce, (vRot.z/PI_BY_TWO)*fForce, 0>;
+    }else{
+        vForce = <(vRot.z/PI_BY_TWO)*fForce, ((PI_BY_TWO-vRot.z)/PI_BY_TWO)*fForce, 0>;
+    }
+     
+    for (; i < llGetListLength(lns); i++){
+        t += [PRIM_LINK_TARGET, llList2Integer(lns, i), PRIM_FLEXIBLE,TRUE,2,1.0-position,2,0,0,vForce];
+    }
+     
+    llSetLinkPrimitiveParamsFast(1, t);
+}
+ 
+setTailRot(){
+    rotation mult = <0, 0, 0, 1>;
+    mult = llEuler2Rot(<0, 60+((-1+position)*60), 0>*DEG_TO_RAD);
+    if (force > 0) llSetLinkPrimitiveParamsFast(1, [PRIM_ROTATION, llEuler2Rot(<90+force, 90-force, 270> * DEG_TO_RAD)*mult]);
+    else if (force < 0) llSetLinkPrimitiveParamsFast(1, [PRIM_ROTATION, llEuler2Rot(<270+force, 90+force, 90> * DEG_TO_RAD)*mult]);
+    else llSetLinkPrimitiveParamsFast(1, [PRIM_ROTATION, llEuler2Rot(<0, 90, 0> * DEG_TO_RAD)*mult]);
+}
+
+
+//================================================================================
+//================================================================================
+default 
+{
+    state_entry(){
+        kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+        //init
+        owner=llGetOwner();        
+    }
+
+    changed(integer change){ 
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_INVENTORY) llResetScript(); 
+    }
+
+    dataserver(key query_id, string data){
+        if(query_id == kQuery){
+            if(data == EOF){
+                ++current_notecard;
+                string note=llGetScriptName()+"_"+NOTECARD+" "+(string)current_notecard;
+                if(llGetInventoryType(note)!=INVENTORY_NONE){
+                    kQuery = llGetNotecardLine(note, iLine=0);
+                }else{
+                    state run;
+                }
+            }else{
+                ++iLine;
+                if(current_notecard!=0){
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD+" "+(string)current_notecard, iLine);
+                }else{
+                    kQuery = llGetNotecardLine(llGetScriptName()+"_"+NOTECARD, iLine);
+                }
+
+                data=llStringTrim(data, STRING_TRIM);
+                if(llGetSubString(data, 0,0)!="#"){
+                    list l=llParseString2List(data, [":"], []);
+                    processCommand(llList2String(l, 0), llList2String(l, 1));
+                }
+            }
+        }
+    }
+}
+
+//================================================================================
+state run{
+    state_entry(){
+        scriptRunning=TRUE;
+                
+        showFreeMemory();
+        listenHandle=llListen(CHANNEL, "", NULL_KEY, "");
+        
+        speed = 0;
+        fRate = (wRange.y-wRange.x)*speed + wRange.x;
+        fFRate = (fWRange.y-fWRange.x)*speed + fWRange.x;
+        dTimer = tDelay.y+0.5;
+        force = 0;
+        setTailRot();
+        setSize();
+        llSetTimerEvent(0.1);
+        
+    }
+    
+    listen(integer chan, string name, key _id, string message){ 
+        //llOwnerSay(message);
+        if(chan==CHANNEL){
+            if(llGetOwnerKey(_id)==owner){
+                list temp=llParseString2List(llStringTrim(message, STRING_TRIM), [":"], []);
+                if(llListFindList(IDs, [llList2String(temp, 0)])!=-1){
+                    processCommand(llList2String(temp, 1), llList2String(temp, 2));
+                }
+            }
+        }
+    }
+      
+    changed(integer change){ 
+        if(change & CHANGED_OWNER) llResetScript();
+        if(change & CHANGED_LINK) llResetScript(); 
+    }
+    
+    timer(){
+        if (wag && dTimer > (1-speed) * (tDelay.y-tDelay.x) + tDelay.x){
+            if (type){
+                force += fRate;
+                if (force >= fRange.y || force <= fRange.x){
+                    if (force >= fRange.y) force = fRange.y;
+                    else if (force <= fRange.x) force = fRange.x;
+                    fRate *= -1;
+                    dTimer = 0;
+                }
+                setTailRot();
+            }else{
+                fForce += fFRate;
+                if (fForce >= fFRange.y || fForce <= fFRange.x){
+                    fFRate *= -1;
+                }
+                setFlexi();
+            }
+        }else{
+            dTimer+= 0.1;
+        }
+      
+    }
+}
